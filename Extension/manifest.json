@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Local Vault Capture",
+  "version": "1.0",
+  "description": "Captures text and sends it to a local LLM bridge.",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Capture Note"
+  },
+  "options_page": "options.html"
+}
