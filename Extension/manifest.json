@@ -1,12 +1,22 @@
 {
   "manifest_version": 3,
   "name": "Local Vault Capture",
-  "version": "1.0",
-  "description": "Captures text and sends it to a local LLM bridge.",
-  "permissions": ["storage", "activeTab", "scripting"],
+  "version": "2.0",
+  "description": "Records AI chats procedurally to a local LLM bridge.",
+  "permissions": ["storage", "activeTab", "scripting", "tabs"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"]
+    }
+  ],
   "action": {
     "default_popup": "popup.html",
     "default_title": "Capture Note"

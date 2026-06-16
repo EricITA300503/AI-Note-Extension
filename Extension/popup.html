@@ -3,17 +3,18 @@
 <head>
   <style>
     body { font-family: system-ui; width: 300px; padding: 20px; text-align: center; }
-    h3 { margin-top: 0; }
+    h3 { margin-top: 0; margin-bottom: 5px; }
     p.desc { font-size: 13px; color: #555; margin-bottom: 15px; }
-    select, button { width: 100%; margin-top: 10px; padding: 8px; cursor: pointer; }
-    button { background-color: #007bff; color: white; border: none; border-radius: 4px; font-weight: bold; }
+    select, button { width: 100%; margin-top: 10px; padding: 10px; cursor: pointer; border: none; border-radius: 4px; font-weight: bold; }
+    button { background-color: #007bff; color: white; transition: 0.2s; }
     button:hover { background-color: #0056b3; }
-    #status { margin-top: 15px; font-size: 14px; font-weight: bold; color: #333; }
+    #status { margin-top: 15px; font-size: 13px; font-weight: bold; color: #333; }
   </style>
 </head>
 <body>
-  <h3>Summarize This Page</h3>
-  <p class="desc">Select a template. The AI will automatically read this page and generate a downloadable note.</p>
+
+  <h3>AI Chat Recorder</h3>
+  <p class="desc">Select a prompt. The AI will watch this chat and build your note automatically.</p>
   
   <select id="promptSelect">
     <option value="prompt1">Prompt 1 (Default)</option>
@@ -21,8 +22,9 @@
     <option value="prompt3">Prompt 3</option>
   </select>
   
-  <button id="sendBtn">Read, Summarize & Download</button>
-  <p id="status"></p>
+  <button id="sendBtn">Start Recording Chat</button>
+  
+  <p id="status">System Idle.</p>
 
   <script src="popup.js"></script>
 </body>
