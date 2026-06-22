@@ -6,9 +6,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
+import re
 
 task_queue = None
-is_processing = False  # NEW: Tracks if Ollama is currently generating text
+is_processing = False
 
 class AppendTask(BaseModel):
     chat_id: str
@@ -20,7 +21,7 @@ async def llm_worker():
     print("🤖 Background Worker started! Waiting for chat chunks...")
     while True:
         task = await task_queue.get()
-        is_processing = True  # Lock the status
+        is_processing = True 
         try:
             print(f"📥 Received chunk for chat {task.chat_id}. Sending to Ollama...")
             await process_with_ollama(task)
@@ -28,7 +29,7 @@ async def llm_worker():
         except Exception as e:
             print(f"❌ Worker Error: {e}")
         finally:
-            is_processing = False  # Unlock the status
+            is_processing = False
             task_queue.task_done()
 
 @asynccontextmanager
@@ -50,7 +51,8 @@ app.add_middleware(
 
 VAULT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "Vault"))
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:1.5b" 
+OLLAMA_MODEL = "qwen2.5:1.5b"
+HEAVY_OLLAMA_MODEL = "llama3"
 
 class StartPayload(BaseModel):
     system_prompt: str
@@ -77,7 +79,6 @@ async def append_recording(task: AppendTask):
     await task_queue.put(task)
     return {"status": "queued", "queue_size": task_queue.qsize()}
 
-# NEW: Status endpoint for the Chrome extension to poll
 @app.get("/status")
 async def get_status():
     return {
@@ -93,12 +94,43 @@ async def download_recording(chat_id: str):
 
     with open(filename, "r", encoding="utf-8") as f:
         content = f.read()
-    return {"status": "success", "markdown": content, "filename": f"Note_{chat_id}.md"}
+
+    # 🔥 FIX 1: If Deep Synthesis ran, the "Rolling Summary" header is gone. 
+    # If it's gone, DO NOT rip the file apart! Just return the beautifully synthesized file.
+    if "## Rolling Summary" not in content:
+        print("✨ Delivering Deep Synthesized Note directly!")
+        return {"status": "success", "markdown": content, "filename": f"Note_{chat_id}.md"}
+
+    # --- THE INSTANT PYTHON MERGE (Only runs if Deep Synthesis was skipped) ---
+    top_matter_match = re.search(r'(# Procedural AI Chat Note - .*?\n\n\*\*Prompt Used:\*\* .*?\n\n)', content, re.DOTALL)
+    top_matter = top_matter_match.group(1) if top_matter_match else f"# Procedural AI Chat Note - {chat_id}\n\n"
+
+    # 🔥 FIX 2: Forgiving Regex - Plural/Singular safe and space safe
+    topics = "\n".join(re.findall(r'##\s*📌\s*Core Topic[s]?\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
+    insights = "\n".join(re.findall(r'##\s*🧠\s*Key Insights & Details\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
+    resources = "\n".join(re.findall(r'##\s*🛠️\s*Resources & Tools\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
+    actions = "\n".join(re.findall(r'##\s*🚀\s*Action Items\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
+
+    resources_clean = "\n".join([line for line in resources.split('\n') if line.strip() and "None mentioned" not in line])
+    if not resources_clean: 
+        resources_clean = "* None mentioned."
+
+    merged_content = (
+        f"{top_matter}"
+        f"## 📌 Core Topics\n{topics if topics else 'No topics captured.'}\n\n"
+        f"## 🧠 Key Insights & Details\n{insights if insights else '* No insights captured.'}\n\n"
+        f"## 🛠️ Resources & Tools\n{resources_clean}\n\n"
+        f"## 🚀 Action Items\n{actions if actions else '* No action items captured.'}\n"
+    )
+
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(merged_content)
+
+    return {"status": "success", "markdown": merged_content, "filename": f"Note_{chat_id}.md"}
 
 async def process_with_ollama(task: AppendTask):
     filename = os.path.join(VAULT_DIR, f"Note_{task.chat_id}.md")
     if not os.path.exists(filename): 
-        print("⚠️ File not found, skipping...")
         return
 
     with open(filename, "r", encoding="utf-8") as f:
@@ -115,17 +147,20 @@ async def process_with_ollama(task: AppendTask):
     if "*Waiting for conversation to begin...*" in existing_content:
         instruction = (
             f"{strict_rules}"
-            f"Prompt: {task.system_prompt}\n\n"
-            f"Summarize the following conversation:\n{task.new_text}"
+            f"Here is your formatting template and instructions:\n"
+            f"<instructions>\n{task.system_prompt}\n</instructions>\n\n"
+            f"Here is the conversation you need to process:\n"
+            f"<conversation>\n{task.new_text}\n</conversation>\n\n"
+            f"IMPORTANT: Fill out the template using ONLY the conversation above. Do NOT output empty placeholders."
         )
         replace_mode = True
     else:
+        # 🔥 FIX 1: Stop asking the LLM to rewrite the existing file. Just extract the new stuff!
         instruction = (
             f"{strict_rules}"
-            f"Prompt: {task.system_prompt}\n\n"
-            f"Here is the existing summary so far:\n{existing_content}\n\n"
-            f"Here is the newest exchange:\n{task.new_text}\n\n"
-            f"Update the summary to incorporate ONLY this new information. Output ONLY the updated Markdown summary."
+            f"Here is the newest exchange to process:\n<new_chat>\n{task.new_text}\n</new_chat>\n\n"
+            f"Format the extracted notes using the rules in this prompt:\n<instructions>\n{task.system_prompt}\n</instructions>\n\n"
+            f"IMPORTANT: Output ONLY the newly extracted data. Do NOT output empty placeholders."
         )
         replace_mode = False
 
@@ -143,19 +178,61 @@ async def process_with_ollama(task: AppendTask):
                 if replace_mode:
                     new_file_content = existing_content.replace("*Waiting for conversation to begin...*", llm_output)
                 else:
-                    header_idx = existing_content.find("## Rolling Summary\n\n")
-                    if header_idx != -1:
-                        new_file_content = existing_content[:header_idx + len("## Rolling Summary\n\n")] + llm_output
-                    else:
-                        new_file_content = existing_content + "\n\n" + llm_output
+                    # 🔥 FIX 2: Literally APPEND the new LLM output. DO NOT replace the old summary!
+                    new_file_content = existing_content + f"\n\n---\n\n{llm_output}"
 
                 with open(filename, "w", encoding="utf-8") as f:
                     f.write(new_file_content)
-            else:
-                print("⚠️ Ollama returned an empty string.")
 
         except Exception as e:
             print(f"❌ Ollama Request Failed: {e}")
+
+@app.post("/synthesize/{chat_id}")
+async def synthesize_note(chat_id: str):
+    filename = os.path.join(VAULT_DIR, f"Note_{chat_id}.md")
+    if not os.path.exists(filename):
+        raise HTTPException(status_code=404, detail="Note not found.")
+
+    with open(filename, "r", encoding="utf-8") as f:
+        raw_content = f.read()
+
+    # 🔥 FIX 4: Short-circuit empty files to prevent Llama 3 hallucinations
+    if "*Waiting for conversation to begin...*" in raw_content:
+        print("⚠️ No chat data recorded. Skipping heavy synthesis.")
+        return {"status": "skipped", "reason": "No chat data found."}
+
+    top_matter_match = re.search(r'(# Procedural AI Chat Note - .*?\n\n\*\*Prompt Used:\*\* .*?\n\n)', raw_content, re.DOTALL)
+    top_matter = top_matter_match.group(1) if top_matter_match else f"# Procedural AI Chat Note - {chat_id}\n\n"
+
+    instruction = (
+        "You are an expert editor. Below is a chronologically appended log of AI-extracted notes. "
+        "Read all the extracted points, merge duplicates, and rewrite this into ONE beautifully unified, cohesive Markdown document. "
+        "CRITICAL RULES:\n"
+        "1. Do NOT drop any facts, book titles, or specific details.\n"
+        "2. Keep the exact same headers: ## 📌 Core Topics, ## 🧠 Key Insights & Details, ## 🛠️ Resources & Tools, ## 🚀 Action Items.\n\n"
+        f"Raw Notes to Synthesize:\n{raw_content}"
+    )
+
+    async with httpx.AsyncClient(timeout=None) as client:
+        try:
+            response = await client.post(OLLAMA_URL, json={
+                "model": HEAVY_OLLAMA_MODEL,
+                "prompt": instruction,
+                "stream": False
+            })
+            response.raise_for_status()
+            final_summary = response.json().get("response", "").strip()
+
+            final_content = f"{top_matter}{final_summary}"
+
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(final_content)
+
+            return {"status": "success"}
+            
+        except Exception as e:
+            print(f"❌ Heavy Synthesis Failed: {e}")
+            raise HTTPException(status_code=500, detail="Heavy Synthesis Failed")
 
 if __name__ == "__main__":
     import uvicorn

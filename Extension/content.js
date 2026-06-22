@@ -3,18 +3,45 @@ let seenMessages = new Set();
 let currentChatId = null;
 let currentPrompt = null;
 
+//S NEW: Recursive Breadth-First Search to pierce Gemini's Shadow DOM boundaries
+function queryAllDeep(selector, root = document) {
+    let results = Array.from(root.querySelectorAll(selector));
+    
+    // Find all elements that host a shadowRoot
+    const elementsWithShadow = Array.from(root.querySelectorAll('*')).filter(el => el.shadowRoot);
+    
+    // Recursively search inside every shadowRoot
+    for (const el of elementsWithShadow) {
+        results = results.concat(queryAllDeep(selector, el.shadowRoot));
+    }
+    
+    return results;
+}
+
 function extractNewMessages() {
   let newChatText = "";
-  const nodes = document.querySelectorAll('user-query, model-response, [data-message-author-role], .font-user-message, .font-claude-message');
+  
+  // Use the deep query to hunt down Gemini's custom elements through the Shadow DOM
+  const nodes = queryAllDeep('user-query, model-response, [data-message-author-role], .font-user-message, .font-claude-message');
 
   nodes.forEach(node => {
-    const text = node.innerText.trim();
+    // 🔥 FIX: Extract text from inside the Shadow Root if it exists
+    let text = "";
+    if (node.shadowRoot) {
+      text = node.shadowRoot.textContent.trim();
+    } else {
+      text = node.innerText ? node.innerText.trim() : node.textContent.trim();
+    }
+
     if (text && !seenMessages.has(text)) {
       seenMessages.add(text);
 
       let role = 'System';
-      if (node.tagName.toLowerCase() === 'user-query') role = 'User';
-      else if (node.tagName.toLowerCase() === 'model-response') role = 'Gemini';
+      const tagName = node.tagName.toLowerCase();
+      
+      // Map Gemini's specific tags to clean roles
+      if (tagName === 'user-query') role = 'User';
+      else if (tagName === 'model-response') role = 'Gemini';
       else if (node.hasAttribute('data-message-author-role')) {
         role = node.getAttribute('data-message-author-role').toUpperCase();
       }
@@ -28,7 +55,15 @@ function extractNewMessages() {
 
 function transmitUpdates() {
   const newText = extractNewMessages();
-  if (newText.trim() === "" || !currentChatId) return;
+  
+  console.log("=== Local Vault Capture Debug ===");
+  console.log("Extracted Text Length:", newText.trim().length);
+  
+  if (newText.trim() === "" || !currentChatId) {
+      return; 
+  }
+
+  console.log("🚀 Shadow DOM pierced! Sending chat chunk to background relay...");
 
   // Send the full payload safely to the background relay
   chrome.runtime.sendMessage({ 
@@ -53,7 +88,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!observer) {
       observer = new MutationObserver(() => {
         clearTimeout(window.observerTimeout);
-        window.observerTimeout = setTimeout(transmitUpdates, 10000);
+        // 10-second debounce gives Gemini time to finish streaming its answer
+        window.observerTimeout = setTimeout(transmitUpdates, 10000); 
       });
       observer.observe(document.body, { childList: true, subtree: true });
     }
