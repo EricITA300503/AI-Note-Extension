@@ -51,7 +51,6 @@ app.add_middleware(
 
 VAULT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "Vault"))
 OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "qwen2.5:1.5b"
 HEAVY_OLLAMA_MODEL = "llama3"
 
 class StartPayload(BaseModel):
@@ -95,40 +94,14 @@ async def download_recording(chat_id: str):
     with open(filename, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # 🔥 FIX 1: If Deep Synthesis ran, the "Rolling Summary" header is gone. 
-    # If it's gone, DO NOT rip the file apart! Just return the beautifully synthesized file.
-    if "## Rolling Summary" not in content:
-        print("✨ Delivering Deep Synthesized Note directly!")
-        return {"status": "success", "markdown": content, "filename": f"Note_{chat_id}.md"}
-
-    # --- THE INSTANT PYTHON MERGE (Only runs if Deep Synthesis was skipped) ---
-    top_matter_match = re.search(r'(# Procedural AI Chat Note - .*?\n\n\*\*Prompt Used:\*\* .*?\n\n)', content, re.DOTALL)
-    top_matter = top_matter_match.group(1) if top_matter_match else f"# Procedural AI Chat Note - {chat_id}\n\n"
-
-    # 🔥 FIX 2: Forgiving Regex - Plural/Singular safe and space safe
-    topics = "\n".join(re.findall(r'##\s*📌\s*Core Topic[s]?\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
-    insights = "\n".join(re.findall(r'##\s*🧠\s*Key Insights & Details\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
-    resources = "\n".join(re.findall(r'##\s*🛠️\s*Resources & Tools\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
-    actions = "\n".join(re.findall(r'##\s*🚀\s*Action Items\n(.*?)(?=\n## |\n---|$)', content, re.DOTALL)).strip()
-
-    resources_clean = "\n".join([line for line in resources.split('\n') if line.strip() and "None mentioned" not in line])
-    if not resources_clean: 
-        resources_clean = "* None mentioned."
-
-    merged_content = (
-        f"{top_matter}"
-        f"## 📌 Core Topics\n{topics if topics else 'No topics captured.'}\n\n"
-        f"## 🧠 Key Insights & Details\n{insights if insights else '* No insights captured.'}\n\n"
-        f"## 🛠️ Resources & Tools\n{resources_clean}\n\n"
-        f"## 🚀 Action Items\n{actions if actions else '* No action items captured.'}\n"
-    )
-
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(merged_content)
-
-    return {"status": "success", "markdown": merged_content, "filename": f"Note_{chat_id}.md"}
+    # 🔥 FIX: No more aggressive regex parsing that risks data loss on Windows formatting.
+    # Return the file data precisely as written by the background worker processes.
+    print(f"📦 Delivering note file cleanly for Note_{chat_id}.md")
+    return {"status": "success", "markdown": content, "filename": f"Note_{chat_id}.md"}
 
 async def process_with_ollama(task: AppendTask):
+    # This function now purely acts as a safe, instant file-appender.
+    # No small AI models are used here, preventing data loss and regurgitation.
     filename = os.path.join(VAULT_DIR, f"Note_{task.chat_id}.md")
     if not os.path.exists(filename): 
         return
@@ -136,56 +109,14 @@ async def process_with_ollama(task: AppendTask):
     with open(filename, "r", encoding="utf-8") as f:
         existing_content = f.read()
 
-    strict_rules = (
-        "STRICT RULES:\n"
-        "1. You are a passive note-taker and summarizer.\n"
-        "2. DO NOT answer questions asked by the User or the AI.\n"
-        "3. DO NOT invent, hallucinate, predict, or generate dialogue that is not explicitly provided.\n"
-        "4. ONLY summarize the exact text provided below.\n\n"
-    )
-
     if "*Waiting for conversation to begin...*" in existing_content:
-        instruction = (
-            f"{strict_rules}"
-            f"Here is your formatting template and instructions:\n"
-            f"<instructions>\n{task.system_prompt}\n</instructions>\n\n"
-            f"Here is the conversation you need to process:\n"
-            f"<conversation>\n{task.new_text}\n</conversation>\n\n"
-            f"IMPORTANT: Fill out the template using ONLY the conversation above. Do NOT output empty placeholders."
-        )
-        replace_mode = True
+        new_file_content = existing_content.replace("*Waiting for conversation to begin...*", task.new_text)
     else:
-        # 🔥 FIX 1: Stop asking the LLM to rewrite the existing file. Just extract the new stuff!
-        instruction = (
-            f"{strict_rules}"
-            f"Here is the newest exchange to process:\n<new_chat>\n{task.new_text}\n</new_chat>\n\n"
-            f"Format the extracted notes using the rules in this prompt:\n<instructions>\n{task.system_prompt}\n</instructions>\n\n"
-            f"IMPORTANT: Output ONLY the newly extracted data. Do NOT output empty placeholders."
-        )
-        replace_mode = False
+        new_file_content = existing_content + f"\n\n---\n\n{task.new_text}"
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        try:
-            response = await client.post(OLLAMA_URL, json={
-                "model": OLLAMA_MODEL,
-                "prompt": instruction,
-                "stream": False
-            })
-            response.raise_for_status()
-            llm_output = response.json().get("response", "").strip()
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(new_file_content)
 
-            if llm_output:
-                if replace_mode:
-                    new_file_content = existing_content.replace("*Waiting for conversation to begin...*", llm_output)
-                else:
-                    # 🔥 FIX 2: Literally APPEND the new LLM output. DO NOT replace the old summary!
-                    new_file_content = existing_content + f"\n\n---\n\n{llm_output}"
-
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(new_file_content)
-
-        except Exception as e:
-            print(f"❌ Ollama Request Failed: {e}")
 
 @app.post("/synthesize/{chat_id}")
 async def synthesize_note(chat_id: str):
@@ -196,7 +127,6 @@ async def synthesize_note(chat_id: str):
     with open(filename, "r", encoding="utf-8") as f:
         raw_content = f.read()
 
-    # 🔥 FIX 4: Short-circuit empty files to prevent Llama 3 hallucinations
     if "*Waiting for conversation to begin...*" in raw_content:
         print("⚠️ No chat data recorded. Skipping heavy synthesis.")
         return {"status": "skipped", "reason": "No chat data found."}
@@ -205,11 +135,13 @@ async def synthesize_note(chat_id: str):
     top_matter = top_matter_match.group(1) if top_matter_match else f"# Procedural AI Chat Note - {chat_id}\n\n"
 
     instruction = (
-        "You are an expert editor. Below is a chronologically appended log of AI-extracted notes. "
-        "Read all the extracted points, merge duplicates, and rewrite this into ONE beautifully unified, cohesive Markdown document. "
+        "You are an expert technical editor. Below is a raw, chronologically appended log of AI-extracted notes from a chat. "
+        "Your task is to synthesize these fragmented pieces into ONE comprehensive, highly cohesive, and beautifully formatted Master Note.\n\n"
         "CRITICAL RULES:\n"
-        "1. Do NOT drop any facts, book titles, or specific details.\n"
-        "2. Keep the exact same headers: ## 📌 Core Topics, ## 🧠 Key Insights & Details, ## 🛠️ Resources & Tools, ## 🚀 Action Items.\n\n"
+        "1. STRUCTURE: Create a clear hierarchy using Markdown (H3, H4, bullet points, bold text). Do not just list isolated points; group related concepts together logically.\n"
+        "2. COHESION: Merge all duplicate information. Weave the insights together so it reads like a professional article or study guide.\n"
+        "3. DETAILS & LINKS: Preserve every specific fact, number, tool, and book title. If links or creators are mentioned, format them clearly.\n"
+        "4. REQUIRED HEADERS: You must use these exact four main headers to structure your document: ## 📌 Core Topics, ## 🧠 Key Insights & Details, ## 🛠️ Resources & Tools, ## 🚀 Action Items.\n\n"
         f"Raw Notes to Synthesize:\n{raw_content}"
     )
 
@@ -223,12 +155,14 @@ async def synthesize_note(chat_id: str):
             response.raise_for_status()
             final_summary = response.json().get("response", "").strip()
 
-            final_content = f"{top_matter}{final_summary}"
-
-            with open(filename, "w", encoding="utf-8") as f:
-                f.write(final_content)
-
-            return {"status": "success"}
+            if final_summary:
+                final_content = f"{top_matter}{final_summary}"
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(final_content)
+                return {"status": "success"}
+            else:
+                print("⚠️ Heavy Synthesis returned an empty string.")
+                return {"status": "failed", "reason": "Empty string from compiler"}
             
         except Exception as e:
             print(f"❌ Heavy Synthesis Failed: {e}")

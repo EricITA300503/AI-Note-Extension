@@ -3,7 +3,7 @@
   "name": "Local Vault Capture",
   "version": "2.0",
   "description": "Records AI chats procedurally to a local LLM bridge.",
-  "permissions": ["storage", "activeTab", "scripting", "tabs"],
+  "permissions": ["storage", "activeTab", "scripting", "tabs", "downloads"],
   "host_permissions": [
     "http://127.0.0.1/*",
     "http://localhost/*"
