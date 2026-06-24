@@ -45,17 +45,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             chrome.storage.local.set({ processingState: `AI is finishing up... (${totalTasks} chunk(s) remaining)` });
           } 
           else if (!isSynthesizing && !synthesisDone) {
-            // Queue is empty. 🔥 Always execute the heavy Llama 3 Synthesis Pass
             isSynthesizing = true; 
             chrome.storage.local.set({ processingState: "Running Deep AI Synthesis... (May take a while)" });
             
-            fetch(`http://127.0.0.1:8000/synthesize/${chatId}`, { method: 'POST' })
+            // 🔥 Fetch the user's custom prompts dynamically from storage
+            chrome.storage.sync.get(['prompts'], (syncResult) => {
+              const masterRules = syncResult.prompts?.masterPrompt || "You are an expert technical editor.";
+              
+              // Inject the master rules into the HTTP payload
+              fetch(`http://127.0.0.1:8000/synthesize/${chatId}`, { 
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ master_prompt: masterRules })
+              })
               .then(() => { synthesisDone = true; })
               .catch((e) => {
                 console.error("Synthesis failed, falling back to raw download:", e);
                 synthesisDone = true;
               });
-          } 
+            });
+          }
           else if (synthesisDone) {
             clearInterval(checkStatusInterval); 
 

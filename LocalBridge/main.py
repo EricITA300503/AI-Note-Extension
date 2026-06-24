@@ -118,8 +118,12 @@ async def process_with_ollama(task: AppendTask):
         f.write(new_file_content)
 
 
+# 🔥 NEW: Pydantic schema to accept the Master Prompt from the extension
+class SynthesizePayload(BaseModel):
+    master_prompt: str
+
 @app.post("/synthesize/{chat_id}")
-async def synthesize_note(chat_id: str):
+async def synthesize_note(chat_id: str, payload: SynthesizePayload):
     filename = os.path.join(VAULT_DIR, f"Note_{chat_id}.md")
     if not os.path.exists(filename):
         raise HTTPException(status_code=404, detail="Note not found.")
@@ -128,21 +132,21 @@ async def synthesize_note(chat_id: str):
         raw_content = f.read()
 
     if "*Waiting for conversation to begin...*" in raw_content:
-        print("⚠️ No chat data recorded. Skipping heavy synthesis.")
-        return {"status": "skipped", "reason": "No chat data found."}
+        return {"status": "skipped", "reason": "No data found."}
 
+    # Extract the metadata block to preserve it
     top_matter_match = re.search(r'(# Procedural AI Chat Note - .*?\n\n\*\*Prompt Used:\*\* .*?\n\n)', raw_content, re.DOTALL)
     top_matter = top_matter_match.group(1) if top_matter_match else f"# Procedural AI Chat Note - {chat_id}\n\n"
 
+    # Extract the specific Task Prompt (Prompt 1, 2, or 3) selected in the popup
+    prompt_match = re.search(r'\*\*Prompt Used:\*\* (.*?)\n', raw_content)
+    user_task = prompt_match.group(1).strip() if prompt_match else "Summarize this log."
+
+    # 🔥 Build the dynamic prompt using ONLY the user's custom instructions
     instruction = (
-        "You are an expert technical editor. Below is a raw, chronologically appended log of AI-extracted notes from a chat. "
-        "Your task is to synthesize these fragmented pieces into ONE comprehensive, highly cohesive, and beautifully formatted Master Note.\n\n"
-        "CRITICAL RULES:\n"
-        "1. STRUCTURE: Create a clear hierarchy using Markdown (H3, H4, bullet points, bold text). Do not just list isolated points; group related concepts together logically.\n"
-        "2. COHESION: Merge all duplicate information. Weave the insights together so it reads like a professional article or study guide.\n"
-        "3. DETAILS & LINKS: Preserve every specific fact, number, tool, and book title. If links or creators are mentioned, format them clearly.\n"
-        "4. REQUIRED HEADERS: You must use these exact four main headers to structure your document: ## 📌 Core Topics, ## 🧠 Key Insights & Details, ## 🛠️ Resources & Tools, ## 🚀 Action Items.\n\n"
-        f"Raw Notes to Synthesize:\n{raw_content}"
+        f"{payload.master_prompt}\n\n"
+        f"SPECIFIC TASK TO EXECUTE:\n{user_task}\n\n"
+        f"RAW CHAT LOG TO PROCESS:\n{raw_content}"
     )
 
     async with httpx.AsyncClient(timeout=None) as client:
@@ -155,14 +159,16 @@ async def synthesize_note(chat_id: str):
             response.raise_for_status()
             final_summary = response.json().get("response", "").strip()
 
-            if final_summary:
-                final_content = f"{top_matter}{final_summary}"
-                with open(filename, "w", encoding="utf-8") as f:
-                    f.write(final_content)
-                return {"status": "success"}
-            else:
-                print("⚠️ Heavy Synthesis returned an empty string.")
-                return {"status": "failed", "reason": "Empty string from compiler"}
+            if not final_summary:
+                print("⚠️ Warning: Heavy model returned empty string. Aborting overwrite to protect data.")
+                return {"status": "failed", "reason": "Empty response from heavy model."}
+
+            final_content = f"{top_matter}{final_summary}"
+
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(final_content)
+
+            return {"status": "success"}
             
         except Exception as e:
             print(f"❌ Heavy Synthesis Failed: {e}")
